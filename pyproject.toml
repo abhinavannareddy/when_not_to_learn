@@ -3,11 +3,13 @@ requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "selective-federated-intelligence"
-version = "0.1.0"
-description = "Synthetic research prototype for selective federated learning under client heterogeneity"
+name = "when-not-to-learn"
+version = "0.2.0"
+description = "Reproducible experiments on selective participation in federated learning under client heterogeneity and distribution shift"
 readme = "README.md"
 requires-python = ">=3.10"
+license = { file = "LICENSE" }
+authors = [{ name = "Abhinav Annareddy" }]
 dependencies = ["numpy>=1.24"]
 
 [project.optional-dependencies]
@@ -15,7 +17,10 @@ experiments = ["matplotlib>=3.7"]
 test = ["pytest>=7.0"]
 
 [project.scripts]
-sfi-experiment = "sfi.experiment:main"
+when-not-to-learn = "when_not_to_learn.experiment:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

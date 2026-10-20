@@ -1,105 +1,134 @@
-# Selective Federated Intelligence
+# When Not to Learn
 
-A small, reproducible research prototype exploring a simple question:
+### Selective collaboration for more reliable federated learning
 
-> Can a federation improve collaboration by declining client updates that appear harmful to local validation performance?
+**Research question:** *When should a participant's update be included in collaborative training—and when should a model stay local, personalise, or abstain?*
 
-This repository is an **experimental baseline**, not a novel or production-ready federated-learning system. It uses synthetic data and logistic regression to make the experiment easy to reproduce before expanding to realistic datasets and stronger methods.
+`when_not_to_learn` is an open research prototype for studying selective participation in federated learning under client heterogeneity and distribution shift. It compares local-only training, conventional Federated Averaging (FedAvg), and a transparent validation-guided selection baseline on synthetic multi-site data.
 
-## Research question
+> **Research status:** early experimental baseline. The code is intended to make assumptions testable—not to claim novelty, guarantee improvements, or provide production-grade privacy.
 
-Under client heterogeneity and distribution shift, can validation-guided selective participation improve average and worst-client performance compared with local-only training and standard FedAvg, without excessive participation or communication costs?
+<p align="center">
+  <img alt="Python" src="https://img.shields.io/badge/Python-3.10%2B-3776AB?logo=python&logoColor=white">
+  <img alt="Tests" src="https://img.shields.io/badge/tests-pytest-0A9EDC?logo=pytest&logoColor=white">
+  <img alt="Status" src="https://img.shields.io/badge/status-research%20prototype-orange">
+  <img alt="Privacy" src="https://img.shields.io/badge/privacy-not%20formally%20guaranteed-lightgrey">
+</p>
 
-## What is implemented
+## Why this problem matters
 
-- Synthetic non-IID clients representing independent sites.
-- Local-only baseline.
-- Standard FedAvg baseline.
-- A transparent selective-participation baseline: a candidate client update is eligible when its hypothetical global model does not increase mean or worst-site validation log-loss beyond a configurable absolute tolerance (simulated metric-oracle baseline).
-- Shifted held-out test data to approximate changed operating conditions.
-- Metrics for mean accuracy, worst-site accuracy, mean log-loss, and personalized accuracy.
-- Round-by-round accepted-client counts, JSON/CSV output, and an optional participation plot.
-- Small automated tests.
+Federated learning lets organisations train collaboratively without pooling their raw training records. But their data can differ: hospitals serve different populations, telecom operators cover different geographies, and factories run different equipment. A shared update may help one participant while hurting another. Those relationships can also change over time.
 
-## Important limitations
+This project asks whether a federation can use evidence about local and worst-site performance to decide when collaboration is useful, instead of assuming every update should always be aggregated.
 
-1. The data is synthetic. Results do not establish real-world effectiveness.
-2. The selective rule is deliberately simple and should be treated as a baseline to improve, not as a claimed research novelty.
-3. The current implementation does not provide differential privacy, secure aggregation, cryptographic protections, or a formal privacy guarantee. Model updates and validation metrics can leak information.
-4. Candidate updates are screened individually using every site's validation metrics in a simulated oracle. This is not a deployable privacy-preserving protocol, and the final aggregated update is not guaranteed to satisfy the same guardrails.
-5. The shifted test set is a static proxy for a later operating condition, not a full temporal drift simulation. The `drift_after_round` argument is currently descriptive and does not trigger a live shift during training.
-6. The evaluation should be repeated across many random seeds and compared with established personalized/robust FL methods before drawing conclusions.
+## What is implemented today
 
-## Requirements
+- **Synthetic non-IID clients** representing independent sites.
+- **Local-only baseline**: each site trains without cross-site updates.
+- **FedAvg baseline**: all clients contribute in each communication round.
+- **Selective-federation baseline**: candidate updates are screened using simulated validation metrics across all sites, with mean- and worst-site-loss guardrails.
+- **Shifted held-out test distributions** to probe generalisation beyond each site's training distribution.
+- **Evaluation metrics**: mean accuracy, worst-site accuracy, mean log-loss, and personalised mean accuracy.
+- **Reproducible runs** using explicit random seeds; optional multi-seed aggregation reports means and standard deviations.
+- **Artifacts**: JSON summary, per-seed CSV, and an optional participation plot.
+- **Automated tests and CI** to catch basic regressions.
 
-- Python 3.10+
-- NumPy
-- Optional: Matplotlib for a plot; pytest for tests
+## Quick start
 
-## Quick start (Windows PowerShell)
+### Windows PowerShell
 
 ```powershell
-cd selective-federated-intelligence
 py -m venv .venv
 .\.venv\Scripts\Activate.ps1
 python -m pip install --upgrade pip
-pip install -e ".[experiments,test]"
-pytest
-python -m sfi.experiment --seed 7 --rounds 25 --out results
+python -m pip install -e ".[experiments,test]"
+python -m pytest
 ```
 
-If PowerShell blocks activation, run the commands below instead (no activation required):
+Run one reproducible experiment:
 
 ```powershell
-.\.venv\Scripts\python.exe -m pip install -e ".[experiments,test]"
-.\.venv\Scripts\python.exe -m pytest
-.\.venv\Scripts\python.exe -m sfi.experiment --seed 7 --rounds 25 --out results
+python -m when_not_to_learn.experiment --seed 7 --rounds 25 --out results
 ```
 
-## Quick start (macOS/Linux)
+Run a small multi-seed sweep (recommended over interpreting one run):
+
+```powershell
+python -m when_not_to_learn.experiment --seeds 1,2,3,4,5,6,7,8,9,10 --rounds 25 --out results_10_seeds
+```
+
+If PowerShell blocks virtual-environment activation, use `\.venv\Scripts\python.exe` in place of `python` in the commands above.
+
+### macOS / Linux
 
 ```bash
-cd selective-federated-intelligence
 python3 -m venv .venv
 source .venv/bin/activate
 python -m pip install --upgrade pip
-pip install -e '.[experiments,test]'
-pytest
-python -m sfi.experiment --seed 7 --rounds 25 --out results
+python -m pip install -e '.[experiments,test]'
+python -m pytest
+python -m when_not_to_learn.experiment --seeds 1,2,3,4,5 --rounds 25 --out results
 ```
 
-## Output files
+## Outputs
 
-The experiment writes the following into `results/`:
+| File | Contents |
+|---|---|
+| `summary.json` | Configuration, individual run outputs, and aggregate mean / standard deviation across seeds. |
+| `metrics.csv` | One row per seed and method for analysis in Python, R, Excel, or a notebook. |
+| `participation.png` | Per-round participation diagnostic for the first seed in the run. |
 
-- `summary.json` — configuration, metrics, and per-round participation.
-- `metrics.csv` — compact comparison table.
-- `participation.png` — client participation by round (if Matplotlib is installed).
+Generated `results/` directories are ignored by Git by default. Commit result artifacts only when the experiment is reproducible and you want to preserve them as a research record.
 
-The results directory is ignored by Git by default. For a research repository, commit selected results only after you have decided they are useful and reproducible; never commit private or sensitive datasets.
+## Research design and limitations
 
-## Suggested research workflow
+This is a deliberately small baseline, not a state-of-the-art benchmark. Please read [`docs/RESEARCH_PLAN.md`](docs/RESEARCH_PLAN.md) before interpreting the outputs.
 
-1. Run the baseline unchanged and save the output.
-2. Repeat over at least 10 seeds; report mean and standard deviation, not just the best run.
-3. Add a true time-dependent drift event at a specified round.
-4. Compare with a stronger personalized-FL baseline and at least one robust aggregation method.
-5. Add ablations for validation tolerance, client count, non-IID severity, and drift magnitude.
-6. Report mean performance, worst-client performance, calibration/false-confidence, bytes communicated, and recovery time after drift.
-7. Only investigate privacy attacks after the basic experiment is reproducible; do not describe this prototype as privacy-preserving.
+1. **Synthetic data only.** The current results cannot establish effectiveness in hospitals, telecom, or industrial settings.
+2. **The selection rule is not claimed as novel.** Validation-guided selection is a starting point for comparison and critique.
+3. **Oracle-style validation.** Candidate updates are evaluated against every simulated site's validation set. This central evaluator has access to site-level validation data/metrics; it is not a deployable privacy-preserving protocol.
+4. **No formal privacy guarantee.** There is no differential privacy, secure aggregation, cryptographic protection, or formal leakage analysis in this version. Federated learning alone does not guarantee privacy.
+5. **Shift is currently a held-out distribution proxy.** The current code does not yet trigger a genuine time-dependent drift event mid-training; that is a priority for the next milestone.
+6. **Guardrails are not guarantees.** Individually screened candidates can interact badly when aggregated, and the final aggregate is not guaranteed to satisfy the same thresholds.
+7. **No result is guaranteed to win.** If selective federation underperforms, report it and investigate why. Do not select only favourable seeds or metrics.
 
-## Repository layout
+## Roadmap
+
+- [x] Establish local-only and FedAvg baselines.
+- [x] Implement an explicit selective-update baseline.
+- [x] Add repeatable seed-based evaluation and machine-readable outputs.
+- [x] Add automated tests and continuous integration.
+- [ ] Add true temporal drift during training and recovery-time measurements.
+- [ ] Add a stronger personalised-FL baseline and a robust-aggregation baseline.
+- [ ] Add confidence intervals and paired statistical comparisons across seeds.
+- [ ] Add ablations for client heterogeneity, selection tolerance, number of clients, and drift severity.
+- [ ] Investigate privacy leakage and realistic privacy-preserving evaluation protocols.
+- [ ] Evaluate on an appropriate public benchmark before making applied claims.
+
+## Repository map
 
 ```text
-selective-federated-intelligence/
-├── src/sfi/core.py          # data generation, training, baselines, evaluation
-├── src/sfi/experiment.py    # CLI and results output
-├── tests/test_core.py       # smoke tests
+when_not_to_learn/
+├── .github/workflows/tests.yml    # Continuous integration
+├── docs/RESEARCH_PLAN.md          # Research questions, hypotheses, milestones
+├── src/when_not_to_learn/
+│   ├── core.py                    # Synthetic clients, training, baselines, metrics
+│   └── experiment.py              # CLI, multi-seed runs, output files
+├── tests/                         # Automated smoke tests
+├── CITATION.cff                   # Citation metadata
+├── LICENSE
 ├── pyproject.toml
-├── requirements.txt
 └── README.md
 ```
 
-## Research integrity note
+## How to contribute or challenge the idea
 
-This project is a starting point for a research discussion, not evidence that the proposed idea is novel. A literature review is required to position the contribution against selective participation, personalized federated learning, client drift detection, and robust aggregation work.
+Useful contributions include a reproducible counterexample, a stronger baseline, a drift scenario, a metric critique, or a well-motivated change to the selection rule. Please include the command, seed(s), configuration, and output needed to reproduce a reported result. See the research plan before opening a feature request.
+
+## Citation
+
+If you reference this prototype, use the metadata in [`CITATION.cff`](CITATION.cff). The repository is an evolving research artifact, not a peer-reviewed publication.
+
+## License
+
+Released under the MIT License; see [`LICENSE`](LICENSE).
