@@ -1,0 +1,21 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "selective-federated-intelligence"
+version = "0.1.0"
+description = "Synthetic research prototype for selective federated learning under client heterogeneity"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = ["numpy>=1.24"]
+
+[project.optional-dependencies]
+experiments = ["matplotlib>=3.7"]
+test = ["pytest>=7.0"]
+
+[project.scripts]
+sfi-experiment = "sfi.experiment:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
