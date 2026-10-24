@@ -38,23 +38,23 @@ Federated learning coordinates model training across data holders without requir
 
 ## Critical limitations of the current version
 
-The current shifted test set is a static proxy, not a time-dependent drift event. The selection mechanism uses an oracle-style evaluator with access to every site's validation set. It is neither a secure protocol nor a formal privacy guarantee. The update screening rule is a baseline and should not be presented as a novel algorithm without a literature review.
+The original `experiment.py` shifted test set is a static proxy; the v0.3 `drift.py` benchmark adds a genuine mid-training drift event. The selection mechanism uses an oracle-style evaluator with access to every site's validation set. It is neither a secure protocol nor a formal privacy guarantee. The update screening rule is a baseline and should not be presented as a novel algorithm without a literature review.
 
 ## Next milestones
 
-### M1 — Establish reproducibility
+### M1 — Establish reproducibility ✅ (20 seeds, bootstrap CIs)
 
 Run at least 10–30 seeds. Report mean, standard deviation, and per-seed outcomes. Check that conclusions do not depend on a single seed.
 
-### M2 — Introduce temporal drift
+### M2 — Introduce temporal drift ✅ (v0.3; recovery metrics are weakly informative at default severity)
 
 Specify a drift round, alter a subset of clients' data-generating process after that round, and evaluate performance before and after the change. Measure detection delay and recovery time.
 
-### M3 — Strengthen comparisons
+### M3 — Strengthen comparisons 🟡 (fine-tuned FedAvg and coordinate median added; FedProx/Ditto outstanding)
 
 Add a personalised federated-learning method and a robust aggregation method. Document implementation choices and tuning budgets fairly across methods.
 
-### M4 — Ablation and failure analysis
+### M4 — Ablation and failure analysis 🟡 (heterogeneity, data size, severity done; tolerance, client count, validation size outstanding)
 
 Vary client count, heterogeneity severity, drift magnitude, selection tolerance, and validation sample size. Record when selection rejects helpful updates or accepts harmful ones.
 
