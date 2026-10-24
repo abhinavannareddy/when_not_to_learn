@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "when-not-to-learn"
-version = "0.3.0"
+version = "0.4.0"
 description = "Reproducible experiments on selective participation in federated learning under client heterogeneity and distribution shift"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -14,11 +14,13 @@ dependencies = ["numpy>=1.24"]
 
 [project.optional-dependencies]
 experiments = ["matplotlib>=3.7"]
-test = ["pytest>=7.0", "ruff>=0.4"]
+realdata = ["scikit-learn>=1.3"]
+test = ["pytest>=7.0", "ruff>=0.4", "scikit-learn>=1.3"]
 
 [project.scripts]
 when-not-to-learn = "when_not_to_learn.experiment:main"
 wnl-benchmark = "when_not_to_learn.benchmark:main"
+wnl-realdata = "when_not_to_learn.realdata:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]

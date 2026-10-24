@@ -16,11 +16,15 @@ import numpy as np
 from .drift import METHOD_LABELS, METHODS, DriftConfig, run_seeds
 from .stats import bootstrap_ci, paired_comparison
 
+CORE = ("local_only", "fedavg", "selective", "site_gate")        # cheap subset for ablations
+TRAJ = ("local_only", "fedavg", "fedavg_ft", "ditto", "median", "selective", "site_gate")
+
 SCALARS = ("final_accuracy", "final_worst_site_accuracy", "final_log_loss", "post_auc",
            "drop", "recovery_rounds")
 # Okabe-Ito colour-blind-safe palette
 COLORS = {"local_only": "#0072B2", "fedavg": "#D55E00", "fedavg_ft": "#CC79A7",
-          "median": "#999999", "selective": "#009E73", "site_gate": "#E69F00"}
+          "median": "#999999", "selective": "#009E73", "site_gate": "#E69F00",
+          "fedprox": "#56B4E9", "ditto": "#000000", "trimmed_mean": "#7F3C8D"}
 
 
 def _column(runs: List[dict], method: str, key: str) -> List[float]:
@@ -40,18 +44,21 @@ def aggregate(runs: List[dict]) -> Dict[str, dict]:
 
 
 def paired_table(runs: List[dict]) -> Dict[str, dict]:
-    pairs = [("selective", "fedavg"), ("selective", "median"), ("selective", "local_only"),
-             ("site_gate", "selective"), ("site_gate", "local_only"), ("fedavg_ft", "fedavg")]
+    pairs = [("selective", "fedavg"), ("selective", "median"), ("selective", "trimmed_mean"),
+             ("selective", "fedprox"), ("selective", "local_only"), ("site_gate", "selective"),
+             ("site_gate", "local_only"), ("fedavg_ft", "fedavg"), ("ditto", "fedavg"),
+             ("ditto", "local_only")]
     return {f"{a}_vs_{b}": {k: paired_comparison(_column(runs, a, k), _column(runs, b, k))
                             for k in ("final_accuracy", "final_worst_site_accuracy", "post_auc")}
             for a, b in pairs}
 
 
-def sweep(base: DriftConfig, field: str, values: List[float], seeds: List[int]) -> List[dict]:
+def sweep(base: DriftConfig, field: str, values: List[float], seeds: List[int],
+          methods=METHODS) -> List[dict]:
     rows = []
     for v in values:
-        runs = run_seeds(replace(base, **{field: v}), seeds)
-        for m in METHODS:
+        runs = run_seeds(replace(base, **{field: v}), seeds, methods)
+        for m in methods:
             acc = _column(runs, m, "final_accuracy")
             lo, hi = bootstrap_ci(acc)
             rows.append({field: v, "method": m, "mean_final_accuracy": float(np.mean(acc)),
@@ -61,14 +68,15 @@ def sweep(base: DriftConfig, field: str, values: List[float], seeds: List[int]) 
     return rows
 
 
-def grid(base: DriftConfig, hets: List[float], sizes: List[int], seeds: List[int]) -> List[dict]:
+def grid(base: DriftConfig, hets: List[float], sizes: List[int], seeds: List[int],
+         methods=CORE) -> List[dict]:
     """Final accuracy for every method over heterogeneity x local-sample-size."""
     rows = []
     for n in sizes:
         for h in hets:
-            runs = run_seeds(replace(base, heterogeneity=h, samples_per_client=n), seeds)
+            runs = run_seeds(replace(base, heterogeneity=h, samples_per_client=n), seeds, methods)
             row = {"heterogeneity": h, "samples_per_client": n}
-            for m in METHODS:
+            for m in methods:
                 row[m] = float(np.mean(_column(runs, m, "final_accuracy")))
             rows.append(row)
             print(f"  heterogeneity={h} n={n}: done", flush=True)
@@ -94,7 +102,7 @@ def plot_trajectories(runs: List[dict], cfg: DriftConfig, path: Path, plt) -> No
     fig, axes = plt.subplots(1, 2, figsize=(11, 4.2), sharex=True)
     for ax, key, title in ((axes[0], "mean_accuracy", "Mean site accuracy"),
                            (axes[1], "worst_site_accuracy", "Worst-site accuracy")):
-        for m in METHODS:
+        for m in TRAJ:
             arr = np.array([[t[key] for t in r["trajectories"][m]] for r in runs])
             mu = arr.mean(0)
             se = arr.std(0, ddof=1) / np.sqrt(len(arr))
@@ -114,7 +122,7 @@ def plot_trajectories(runs: List[dict], cfg: DriftConfig, path: Path, plt) -> No
 
 def plot_sweep(rows: List[dict], field: str, xlabel: str, title: str, path: Path, plt) -> None:
     fig, ax = plt.subplots(figsize=(6.4, 4.2))
-    for m in METHODS:
+    for m in dict.fromkeys(r["method"] for r in rows):
         pts = sorted((r[field], r["mean_final_accuracy"], r["ci_low"], r["ci_high"])
                      for r in rows if r["method"] == m)
         x, y, lo, hi = map(np.array, zip(*pts))
@@ -154,6 +162,24 @@ def plot_gain_map(rows: List[dict], path: Path, plt, scenario: str) -> None:
     plt.close(fig)
 
 
+def plot_drift_kinds(kind_runs: Dict[str, List[dict]], cfg: DriftConfig, path: Path, plt) -> None:
+    fig, axes = plt.subplots(1, len(kind_runs), figsize=(12.5, 3.9), sharey=True)
+    for ax, (kind, runs) in zip(axes, kind_runs.items()):
+        for m in CORE:
+            arr = np.array([[t["mean_accuracy"] for t in r["trajectories"][m]] for r in runs])
+            mu, se = arr.mean(0), arr.std(0, ddof=1) / np.sqrt(len(arr))
+            x = np.arange(1, len(mu) + 1)
+            ax.plot(x, mu, color=COLORS[m], label=METHOD_LABELS[m], lw=1.8)
+            ax.fill_between(x, mu - 1.96 * se, mu + 1.96 * se, color=COLORS[m], alpha=0.12, lw=0)
+        ax.axvline(cfg.drift_round + 0.5, color="black", ls="--", lw=1)
+        ax.set(xlabel="Communication round", title=f"{kind} drift")
+    axes[0].set_ylabel("Mean site accuracy")
+    axes[-1].legend(frameon=False, fontsize=8, loc="lower right")
+    fig.tight_layout()
+    fig.savefig(path, bbox_inches="tight")
+    plt.close(fig)
+
+
 def plot_forest(paired: Dict[str, dict], path: Path, plt) -> None:
     rows = [(k, v["final_worst_site_accuracy"]) for k, v in paired.items()]
     fig, ax = plt.subplots(figsize=(7, 3.8))
@@ -177,6 +203,7 @@ def main() -> None:
     ap.add_argument("--seeds", type=int, default=20, help="Seeds for the main comparison.")
     ap.add_argument("--sweep-seeds", type=int, default=10, help="Seeds per ablation setting.")
     ap.add_argument("--out", default="results/benchmark")
+    ap.add_argument("--severity-seeds", type=int, default=20, help="Seeds per severity setting.")
     ap.add_argument("--no-sweeps", action="store_true")
     args = ap.parse_args()
 
@@ -205,7 +232,20 @@ def main() -> None:
             grid_rows[tag] = grid(c, [0.1, 0.5, 1.0, 1.5], [60, 150, 400, 900], sw)
             _write_csv(out / f"grid_{tag}.csv", grid_rows[tag])
         print("Sweep: severity", flush=True)
-        sweeps["severity"] = sweep(cfg, "severity", [0.0, 1.0, 2.0, 3.0, 4.0], sw)
+        sweeps["severity"] = sweep(cfg, "severity", [0.0, 1.0, 2.0, 3.0, 4.0],
+                                   list(range(1, args.severity_seeds + 1)), TRAJ)
+        print("Ablation: selection tolerance", flush=True)
+        sweeps["tolerance"] = sweep(cfg, "tolerance", [0.0, 0.005, 0.015, 0.05, 0.15], sw, CORE)
+        print("Ablation: number of clients", flush=True)
+        sweeps["clients"] = sweep(cfg, "n_clients", [3, 6, 12, 24], sw, CORE)
+        print("Ablation: validation-set size seen by the selection rule", flush=True)
+        sweeps["valsize"] = sweep(cfg, "val_size", [5, 10, 25, 50, 180], sw, CORE)
+        print("Drift schedules", flush=True)
+        kind_runs = {k: run_seeds(replace(cfg, drift_kind=k), sw, CORE) for k in ("abrupt", "gradual", "recurring")}
+        _write_csv(out / "drift_kinds.csv", [
+            {"drift_kind": k, "method": m, "mean_final_accuracy": float(np.mean(_column(rs, m, "final_accuracy"))),
+             "mean_worst_site_accuracy": float(np.mean(_column(rs, m, "final_worst_site_accuracy")))}
+            for k, rs in kind_runs.items() for m in CORE])
         for name, rows in sweeps.items():
             _write_csv(out / f"sweep_{name}.csv", rows)
 
@@ -225,6 +265,13 @@ def main() -> None:
                           "stationary data (no drift)" if tag == "stationary" else "a third of sites drift mid-training")
         plot_sweep(sweeps["severity"], "severity", "Drift severity (scale)",
                    "Robustness to drift severity", out / "sweep_severity.png", plt)
+        plot_sweep(sweeps["tolerance"], "tolerance", "Selection tolerance (log-loss)",
+                   "Selection tolerance ablation", out / "sweep_tolerance.png", plt)
+        plot_sweep(sweeps["clients"], "n_clients", "Number of sites",
+                   "Federation size ablation", out / "sweep_clients.png", plt)
+        plot_sweep(sweeps["valsize"], "val_size", "Validation samples per site used for selection",
+                   "Validation-size ablation", out / "sweep_valsize.png", plt)
+        plot_drift_kinds(kind_runs, cfg, out / "drift_kinds.png", plt)
     print(f"Wrote results to {out.resolve()}")
 
 

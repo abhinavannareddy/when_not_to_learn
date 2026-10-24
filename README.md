@@ -6,7 +6,7 @@
 
 `when_not_to_learn` is an open research prototype for studying selective participation in federated learning under client heterogeneity and distribution shift. It compares local-only training, conventional Federated Averaging (FedAvg), and a transparent validation-guided selection baseline on synthetic multi-site data.
 
-> **Research status:** early experimental baseline (v0.3). The code is intended to make assumptions testable—not to claim novelty, guarantee improvements, or provide production-grade privacy. All results are on synthetic data.
+> **Research status:** early experimental baseline (v0.4). The code is intended to make assumptions testable—not to claim novelty, guarantee improvements, or provide production-grade privacy. Results are on synthetic data and on public datasets with synthetic partitions.
 
 <p align="center">
   <img alt="Python" src="https://img.shields.io/badge/Python-3.10%2B-3776AB?logo=python&logoColor=white">
@@ -27,36 +27,38 @@
 
 ![Conceptual architecture for selective collaboration](assets/decision-architecture.svg)
 
-## Headline findings (synthetic, 20 seeds)
+## Headline findings (20 seeds, with confidence intervals)
 
-The v0.3 benchmark makes a third of the sites **drift mid-training** (covariate *and* concept shift at round 15) and compares six strategies. Every number below is reproducible with one command (see [Reproduce](#reproduce-the-results)) and is documented in [`docs/RESULTS.md`](docs/RESULTS.md).
+The benchmark makes a third of the sites **drift mid-training**, compares **nine strategies**, and then repeats the question on **two real public datasets** with non-IID partitions. Everything is reproducible with one command each (see [Reproduce](#reproduce-the-results)); full tables are in [`docs/RESULTS.md`](docs/RESULTS.md) and a draft write-up is in [`docs/PAPER.md`](docs/PAPER.md).
 
 ![Accuracy through a mid-training drift](assets/results/trajectories.png)
 
-| Method | Final mean accuracy (95% CI) | Final worst-site accuracy |
+| Method (synthetic drift benchmark) | Final mean accuracy (95% CI) | Final worst-site accuracy |
 |---|---|---|
 | Local only | **0.929** (0.919–0.938) | **0.876** |
 | Selective + site gate | **0.929** (0.919–0.938) | **0.875** |
+| Ditto | 0.914 (0.903–0.924) | 0.861 |
 | FedAvg + fine-tune | 0.886 (0.870–0.901) | 0.798 |
-| FedAvg | 0.843 (0.822–0.863) | 0.675 |
-| Coordinate median | 0.834 (0.815–0.852) | 0.616 |
+| FedAvg / FedProx | 0.843 (0.822–0.863) | 0.675 / 0.678 |
+| Trimmed mean / Coordinate median | 0.839 / 0.834 | 0.645 / 0.616 |
 | Selective federation | 0.825 (0.800–0.849) | 0.704 |
 
 What the evidence does — and does not — support:
 
-1. **Under strong heterogeneity, collaboration was usually the wrong call.** Local training beat every shared model; the per-site gate (each site keeps the federated model only if it lowers its own validation loss) chose the federated model just **3.5 %** of the time and so matched local-only. This is the "when *not* to learn" result.
-2. **Collaboration helps in a narrow regime** — near-identical sites with little local data (about **+2 pp**) — and hurts increasingly as heterogeneity grows (up to **−14 pp**). See the maps below.
-3. **The validation-guided selection rule is *not* a clear win.** It lowers mean accuracy versus FedAvg (−1.8 pp, 95% CI −2.6 to −0.9) and its worst-site gain versus FedAvg is not distinguishable from zero (+2.9 pp, CI −0.4 to +7.0). It does clearly beat coordinate-median aggregation on worst-site accuracy (+8.8 pp, CI +4.1 to +14.1).
-4. **Personalisation is a stronger baseline than selection.** Fine-tuning FedAvg locally gains +4.3 pp mean and +12.3 pp worst-site accuracy over plain FedAvg.
+1. **When sites differ, collaboration is usually the wrong call.** Local or personalised training beat every global-model method, and a per-site gate (use the federated model only if it lowers *your own* validation loss) abstained in ~96 % of decisions under strong heterogeneity. This is the "when *not* to learn" result.
+2. **It replicates on real data.** On digits with near-IID sites (Dirichlet α = 5) federating *helps* (FedAvg +2.8 pp over local, 95% CI +2.1 to +3.6; the gate federates 54 % of the time). With strong label skew (α = 0.1) FedAvg is **20 pp worse** than local, while Ditto stays within 2 pp.
+3. **Collaboration helps in a narrow regime** — near-identical sites with little local data (about +1 to +3 pp) — and hurts increasingly as heterogeneity grows (up to −14 pp).
+4. **The validation-guided selection rule is not an accuracy win** (−1.8 pp vs FedAvg, CI −2.6 to −0.9), but **it is a robustness win**: its worst-site advantage over FedAvg grows with drift severity (up to +12 pp) and federation size (+14 pp at 12 sites). It is insensitive to its tolerance and to validation-set size (5 samples per site was enough).
+5. **Personalisation is a stronger baseline than selection.** Ditto beats FedAvg by +7.1 pp mean / +18.6 pp worst-site; FedProx (μ = 0.1) and trimmed mean add nothing over FedAvg here.
 
 <p align="center">
   <img alt="Gain map, stationary data" src="assets/results/gain_map_stationary.png" width="48%">
-  <img alt="Gain map, drifting data" src="assets/results/gain_map_drift.png" width="48%">
+  <img alt="Real-data results" src="assets/results/realdata.png" width="48%">
 </p>
 
-*Accuracy gain over local-only training (percentage points) across client heterogeneity × local data size. Left: no drift. Right: a third of sites drift.*
+*Left: accuracy gain over local-only (pp) across heterogeneity × local data size. Right: methods on real digits / breast-cancer partitions.*
 
-These conclusions are specific to a logistic-regression simulator with oracle-style validation; they are hypotheses for further testing, not findings about real federations.
+These conclusions are specific to small linear models and oracle-style validation; treat them as hypotheses to test further, not as findings about production federations.
 
 ## Why this problem matters
 
@@ -75,9 +77,12 @@ This project asks whether a federation can use evidence about local and worst-si
 - **Reproducible runs** using explicit random seeds; optional multi-seed aggregation reports means and standard deviations.
 - **Artifacts**: JSON summary, per-seed CSV, and an optional participation plot.
 - **Temporal drift benchmark** (`drift.py`): a subset of sites changes distribution at a chosen round; every method is scored every round, with drop-at-drift and recovery metrics.
-- **Six strategies compared**: local-only, FedAvg, FedAvg + local fine-tuning, coordinate-wise median (robust aggregation), selective federation, and selective federation with a per-site abstention gate.
+- **Nine strategies compared**: local-only, FedAvg, FedAvg + local fine-tuning, FedProx, Ditto, coordinate median, trimmed mean, selective federation, and selective federation with a per-site abstention gate.
+- **Three drift schedules** (abrupt, gradual, recurring) and configurable severity, heterogeneity, federation size, selection tolerance, and validation-set size.
+- **Real-data experiments** (`realdata.py`): scikit-learn digits and breast-cancer datasets, partitioned with label skew (Dirichlet α) and covariate skew.
 - **Paired statistics** (`stats.py`): bootstrap confidence intervals, sign-flip permutation p-values, win rates, and paired effect sizes across seeds.
-- **Ablations**: heterogeneity × local-data-size maps (with and without drift) and a drift-severity sweep.
+- **Ablations**: heterogeneity × local-data-size maps (with and without drift), drift severity, selection tolerance, number of sites, and validation size.
+- **Measured-results panel in the demo**, generated from the committed result files by `scripts/build_demo_data.py`.
 - **Automated tests, linting (ruff), and CI** on Python 3.10–3.13.
 
 ## Quick start
@@ -107,10 +112,11 @@ python -m when_not_to_learn.experiment --seeds 1,2,3,4,5,6,7,8,9,10 --rounds 25 
 ### Reproduce the results
 
 ```powershell
-python -m when_not_to_learn.benchmark --seeds 20 --sweep-seeds 8 --out results/benchmark
+python -m when_not_to_learn.benchmark --seeds 20 --sweep-seeds 10 --out results/benchmark   # ~25 min
+python -m when_not_to_learn.realdata --seeds 20 --out results/realdata                      # ~3 min
 ```
 
-This writes `summary.json`, per-seed `scalars.csv`, ablation grids, and all figures (about 5 minutes on a laptop CPU). Use `--no-sweeps` for a fast run. The same command is installed as `wnl-benchmark`.
+The first writes `summary.json`, per-seed `scalars.csv`, ablation grids, and all figures; use `--no-sweeps` for a ~1-minute run. The second needs scikit-learn (`pip install -e ".[realdata]"`). They are installed as `wnl-benchmark` and `wnl-realdata`.
 
 If PowerShell blocks virtual-environment activation, use `\.venv\Scripts\python.exe` in place of `python` in the commands above.
 
@@ -139,11 +145,11 @@ Generated `results/` directories are ignored by Git by default. Commit result ar
 
 This is a deliberately small baseline, not a state-of-the-art benchmark. Please read [`docs/RESEARCH_PLAN.md`](docs/RESEARCH_PLAN.md) before interpreting the outputs.
 
-1. **Synthetic data only.** The current results cannot establish effectiveness in hospitals, telecom, or industrial settings.
+1. **Small, public datasets and synthetic partitions.** The current results cannot establish effectiveness in hospitals, telecom, or industrial settings.
 2. **The selection rule is not claimed as novel.** Validation-guided selection is a starting point for comparison and critique.
-3. **Oracle-style validation.** Candidate updates are evaluated against every simulated site's validation set. This central evaluator has access to site-level validation data/metrics; it is not a deployable privacy-preserving protocol.
+3. **Oracle-style validation.** Candidate updates are evaluated against every simulated site's validation set. This central evaluator has access to site-level validation data/metrics; it is not a deployable privacy-preserving protocol. (A validation-size ablation shows the rule still works with 5 samples per site, but that does not make it private.)
 4. **No formal privacy guarantee.** There is no differential privacy, secure aggregation, cryptographic protection, or formal leakage analysis in this version. Federated learning alone does not guarantee privacy.
-5. **Drift is a single abrupt event.** The v0.3 benchmark switches distributions at one round for a fixed subset of sites. Gradual, recurring, and label-only drift are not yet covered, and the original `experiment.py` runner still uses a held-out shifted test set as a proxy.
+5. **Drift is simulated.** Abrupt, gradual, and recurring schedules are supported, but they come from one parametric family with a fixed subset of drifted sites; label-only drift is not covered. The original `experiment.py` runner still uses a held-out shifted test set as a proxy. The real-data experiments have no temporal drift.
 6. **Guardrails are not guarantees.** Individually screened candidates can interact badly when aggregated, and the final aggregate is not guaranteed to satisfy the same thresholds.
 7. **Small, linear models.** Logistic regression on six features is a clean testbed, not a stand-in for deep models.
 8. **No result is guaranteed to win.** If selective federation underperforms, report it and investigate why. Do not select only favourable seeds or metrics.
@@ -158,11 +164,16 @@ This is a deliberately small baseline, not a state-of-the-art benchmark. Please 
 - [x] Add a personalised baseline (fine-tuned FedAvg) and a robust-aggregation baseline (coordinate median).
 - [x] Add confidence intervals and paired statistical comparisons across seeds.
 - [x] Add ablations for client heterogeneity, local data size, and drift severity.
-- [ ] Add ablations for selection tolerance, number of clients, and validation-set size.
-- [ ] Add FedProx / Ditto / trimmed-mean baselines with matched tuning budgets.
-- [ ] Replace oracle validation with a noisy or secure-aggregated selection signal.
-- [ ] Investigate privacy leakage and realistic privacy-preserving evaluation protocols.
-- [ ] Evaluate on an appropriate public benchmark before making applied claims.
+- [x] Add ablations for selection tolerance, number of clients, and validation-set size.
+- [x] Add FedProx / Ditto / trimmed-mean baselines (fixed defaults; **not yet tuned**).
+- [x] Evaluate on public datasets (digits, breast cancer) with non-IID partitions.
+- [x] Add gradual and recurring drift schedules.
+- [x] Connect the demo to real logged results.
+- [ ] Tune baselines with matched budgets (μ, trim fraction, tolerance).
+- [ ] Replace oracle validation with a secure-aggregated or differentially private selection signal.
+- [ ] Investigate privacy leakage of the exchanged metrics.
+- [ ] Evaluate deep models on a realistic multi-site benchmark (e.g. FEMNIST or multi-hospital data).
+- [ ] Peer review and a literature check of `docs/PAPER.md` before any submission.
 
 ## Repository map
 
@@ -176,12 +187,15 @@ when_not_to_learn/
 ├── src/when_not_to_learn/
 │   ├── core.py                    # Synthetic clients, training, baselines, metrics
 │   ├── experiment.py              # Original single/multi-seed CLI
-│   ├── drift.py                   # Mid-training drift scenarios and six strategies
+│   ├── drift.py                   # Drift scenarios and nine strategies
+│   ├── realdata.py                # Real-dataset partitions and experiments
 │   ├── stats.py                   # Bootstrap CIs and paired comparisons
 │   └── benchmark.py               # One-command benchmark, ablations, figures
 ├── assets/results/                # Figures generated by the benchmark
 ├── docs/RESULTS.md                # Full results, tables, and interpretation
+├── docs/PAPER.md                  # Draft technical report with related work
 ├── docs/METHODOLOGY.md            # Scenario, metrics, and statistics definitions
+├── scripts/build_demo_data.py     # Embeds measured results into the demo
 ├── CHANGELOG.md
 ├── tests/                         # Unit and reproducibility tests
 ├── CITATION.cff                   # Citation metadata

@@ -1,28 +1,40 @@
 """Temporal-drift benchmark: clients whose data changes *during* federated training.
 
 Unlike :mod:`when_not_to_learn.core`, where the shift only appears in the held-out test
-set, here a subset of sites switches to a new data regime at ``drift_round``. Every method
-is evaluated after every round against the regime that is currently in force, so we can
-measure damage at the drift event and the time needed to recover.
+set, here a subset of sites changes regime during training. Every method is evaluated
+after every round against the regime that is currently in force, so we can measure damage
+at the drift event and the time needed to recover.
+
+Three drift schedules are supported (``DriftConfig.drift_kind``):
+
+* ``abrupt``    - drifted sites switch to the new regime at ``drift_round``.
+* ``gradual``   - the new regime is blended in linearly over ``ramp_rounds`` rounds.
+* ``recurring`` - drifted sites alternate between regimes every ``period`` rounds.
 
 This is a synthetic benchmark. Nothing here is evidence of real-world effectiveness.
 """
 from __future__ import annotations
 
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
-from typing import Callable, Dict, List
+from typing import Dict, List
 
 import numpy as np
 
-from .core import Array, accuracy, log_loss, train_logistic
+from .core import Array, accuracy, log_loss, predict_proba, train_logistic
 
-METHODS = ("local_only", "fedavg", "fedavg_ft", "median", "selective", "site_gate")
+ALL_METHODS = ("local_only", "fedavg", "fedavg_ft", "fedprox", "ditto", "median",
+               "trimmed_mean", "selective", "site_gate")
+METHODS = ALL_METHODS
 
 METHOD_LABELS = {
     "local_only": "Local only",
     "fedavg": "FedAvg",
     "fedavg_ft": "FedAvg + fine-tune",
+    "fedprox": "FedProx",
+    "ditto": "Ditto",
     "median": "Coordinate median",
+    "trimmed_mean": "Trimmed mean",
     "selective": "Selective federation",
     "site_gate": "Selective + site gate",
 }
@@ -43,6 +55,12 @@ class DriftConfig:
     tolerance: float = 0.015
     local_steps: int = 30
     lr: float = 0.12
+    drift_kind: str = "abrupt"      # abrupt | gradual | recurring
+    ramp_rounds: int = 10           # gradual drift: rounds to blend the new regime in
+    period: int = 5                 # recurring drift: rounds per regime
+    val_size: int | None = None     # cap on validation samples seen by the selection rule
+    prox_mu: float = 0.1            # FedProx / Ditto proximal strength
+    trim_fraction: float = 0.2      # trimmed mean: fraction trimmed from each tail
 
 
 @dataclass
@@ -93,10 +111,60 @@ def make_drift_clients(cfg: DriftConfig, seed: int) -> List[DriftClient]:
     return clients
 
 
-# --- aggregation strategies -------------------------------------------------------------
+def new_regime_weight(cfg: DriftConfig, r: int) -> float:
+    """Fraction (0-1) of the *new* regime in force at round ``r`` for a drifted site."""
+    if cfg.drift_kind == "abrupt":
+        return 1.0 if r > cfg.drift_round else 0.0
+    if cfg.drift_kind == "gradual":
+        return float(np.clip((r - cfg.drift_round) / max(cfg.ramp_rounds, 1), 0.0, 1.0))
+    if cfg.drift_kind == "recurring":
+        return 1.0 if r > cfg.drift_round and ((r - cfg.drift_round - 1) // cfg.period) % 2 == 0 else 0.0
+    raise ValueError(f"unknown drift_kind: {cfg.drift_kind!r}")
+
+
+def regime_data(client: DriftClient, w: float) -> Dict[str, Array]:
+    """Data for a client when a fraction ``w`` of its data comes from the ``post`` draw.
+
+    Non-drifted sites share one distribution across both draws, so blending is harmless there.
+    """
+    if w <= 0.0:
+        return client.pre
+    if w >= 1.0:
+        return client.post
+    out = {}
+    for key in client.pre:
+        a, b = client.pre[key], client.post[key]
+        k = int(round(w * len(a)))
+        out[key] = np.concatenate([a[: len(a) - k], b[:k]])
+    return out
+
+
+# --- local training variants -------------------------------------------------------------
+
+def train_prox(X: Array, y: Array, initial: Array, anchor: Array, mu: float,
+               steps: int, lr: float, l2: float = 1e-3) -> Array:
+    """Logistic regression with a proximal pull toward ``anchor`` (FedProx / Ditto local step)."""
+    w = initial.copy()
+    for _ in range(steps):
+        p = predict_proba(X, w)
+        grad = np.zeros_like(w)
+        grad[:-1] = X.T @ (p - y) / len(y) + l2 * w[:-1]
+        grad[-1] = np.mean(p - y)
+        grad += mu * (w - anchor)
+        w -= lr * grad
+    return w
+
+
+# --- aggregation strategies --------------------------------------------------------------
 
 def _weighted_mean(updates: List[Array], sizes: List[int]) -> Array:
     return np.average(np.stack(updates), axis=0, weights=np.asarray(sizes, dtype=float))
+
+
+def _trimmed_mean(updates: List[Array], frac: float) -> Array:
+    stack = np.sort(np.stack(updates), axis=0)
+    k = min(int(np.floor(frac * len(updates))), (len(updates) - 1) // 2)
+    return stack[k: len(updates) - k].mean(axis=0)
 
 
 def _selective_aggregate(global_w: Array, updates: List[Array], sizes: List[int],
@@ -122,67 +190,102 @@ def _evaluate(models: List[Array], data: List[Dict[str, Array]]) -> Dict[str, fl
             "mean_log_loss": float(np.mean(loss))}
 
 
-# --- experiment -------------------------------------------------------------------------
+# --- experiment --------------------------------------------------------------------------
 
-def run_drift_experiment(cfg: DriftConfig, seed: int) -> Dict[str, object]:
-    """Run all methods through the same drifting scenario and return per-round trajectories."""
-    clients = make_drift_clients(cfg, seed)
-    dim = cfg.n_features + 1
-    state = {m: np.zeros(dim) for m in METHODS}
+def run_drift_experiment(cfg: DriftConfig, seed: int, methods: Iterable[str] = ALL_METHODS,
+                         clients: List[DriftClient] | None = None) -> Dict[str, object]:
+    """Run the selected methods through the same drifting scenario.
+
+    ``methods`` may be any subset of :data:`ALL_METHODS`. Methods are independent except
+    that ``site_gate`` needs ``selective`` and ``local_only``; they are added automatically.
+    ``clients`` lets callers supply their own data (e.g. a real dataset).
+    """
+    methods = list(methods)
+    if "site_gate" in methods:
+        methods += [m for m in ("selective", "local_only") if m not in methods]
+    active = [m for m in ALL_METHODS if m in methods]
+    run = set(active)
+
+    clients = clients if clients is not None else make_drift_clients(cfg, seed)
+    dim = clients[0].pre["X_train"].shape[1] + 1
+    state = {m: np.zeros(dim) for m in ALL_METHODS}
     local_models = [np.zeros(dim) for _ in clients]
-    trajectories: Dict[str, List[Dict[str, float]]] = {m: [] for m in METHODS}
+    ditto_models = [np.zeros(dim) for _ in clients]
+    trajectories: Dict[str, List[Dict[str, float]]] = {m: [] for m in active}
     accepted: List[int] = []
     gate_share: List[float] = []
+    rng = np.random.default_rng(seed + 10_000)  # only used for validation subsampling
 
     for r in range(1, cfg.rounds + 1):
-        regime = "post" if r > cfg.drift_round else "pre"
-        data = [getattr(c, regime) for c in clients]
+        w_new = new_regime_weight(cfg, r)
+        data = [regime_data(c, w_new) for c in clients]
         sizes = [len(d["y_train"]) for d in data]
         val = [(d["X_val"], d["y_val"]) for d in data]
-
-        # Independent local learners keep training on their own stream.
-        local_models = [train_logistic(d["X_train"], d["y_train"], w, cfg.local_steps, cfg.lr)
-                        for w, d in zip(local_models, data)]
+        sel_val = val
+        if cfg.val_size is not None:
+            sel_val = []
+            for X, y in val:
+                idx = rng.choice(len(y), size=min(cfg.val_size, len(y)), replace=False)
+                sel_val.append((X[idx], y[idx]))
 
         def local_updates(start: Array, data=data) -> List[Array]:
             return [train_logistic(d["X_train"], d["y_train"], start, cfg.local_steps, cfg.lr)
                     for d in data]
 
-        state["fedavg"] = _weighted_mean(local_updates(state["fedavg"]), sizes)
-        state["median"] = np.median(np.stack(local_updates(state["median"])), axis=0)
-        state["selective"], n_ok = _selective_aggregate(
-            state["selective"], local_updates(state["selective"]), sizes, val, cfg.tolerance)
-        accepted.append(n_ok)
+        if run & {"local_only", "site_gate"}:
+            local_models = [train_logistic(d["X_train"], d["y_train"], w, cfg.local_steps, cfg.lr)
+                            for w, d in zip(local_models, data)]
+        if run & {"fedavg", "fedavg_ft"}:
+            state["fedavg"] = _weighted_mean(local_updates(state["fedavg"]), sizes)
+        if "median" in run:
+            state["median"] = np.median(np.stack(local_updates(state["median"])), axis=0)
+        if "trimmed_mean" in run:
+            state["trimmed_mean"] = _trimmed_mean(local_updates(state["trimmed_mean"]), cfg.trim_fraction)
+        if "fedprox" in run:
+            anchor = state["fedprox"]
+            ups = [train_prox(d["X_train"], d["y_train"], anchor, anchor, cfg.prox_mu,
+                              cfg.local_steps, cfg.lr) for d in data]
+            state["fedprox"] = _weighted_mean(ups, sizes)
+        if "ditto" in run:
+            g = state["ditto"]
+            ups = [train_logistic(d["X_train"], d["y_train"], g, cfg.local_steps, cfg.lr) for d in data]
+            ditto_models = [train_prox(d["X_train"], d["y_train"], p, g, cfg.prox_mu,
+                                       cfg.local_steps, cfg.lr) for p, d in zip(ditto_models, data)]
+            state["ditto"] = _weighted_mean(ups, sizes)
+        if "selective" in run:
+            state["selective"], n_ok = _selective_aggregate(
+                state["selective"], local_updates(state["selective"]), sizes, sel_val, cfg.tolerance)
+            accepted.append(n_ok)
 
-        shared = {"fedavg": state["fedavg"], "median": state["median"], "selective": state["selective"]}
-        per_site = {
-            "local_only": local_models,
-            # personalised baseline: a few local steps on top of the FedAvg model
-            "fedavg_ft": [train_logistic(d["X_train"], d["y_train"], state["fedavg"], 10, cfg.lr)
-                          for d in data],
-            # per-site abstention: each site keeps whichever of {its local model, the selective
+        per_site: Dict[str, List[Array]] = {}
+        if "local_only" in run:
+            per_site["local_only"] = local_models
+        if "fedavg_ft" in run:  # personalised baseline: a few local steps on the FedAvg model
+            per_site["fedavg_ft"] = [train_logistic(d["X_train"], d["y_train"], state["fedavg"], 10, cfg.lr)
+                                     for d in data]
+        if "ditto" in run:
+            per_site["ditto"] = ditto_models
+        if "site_gate" in run:
+            # Per-site abstention: each site keeps whichever of {its local model, the selective
             # global model} has lower validation loss, i.e. it decides *not* to learn from the
             # federation when the federation does not help it.
-            "site_gate": [g if log_loss(*v, g) <= log_loss(*v, l) else l
-                          for g, l, v in zip([state["selective"]] * len(clients), local_models, val)],
-        }
-        gate_uses_global = sum(log_loss(*v, state["selective"]) <= log_loss(*v, l)
-                               for l, v in zip(local_models, val))
-        gate_share.append(gate_uses_global / len(clients))
-        for m in METHODS:
-            models = per_site.get(m) or [shared[m]] * len(clients)
+            g = state["selective"]
+            use_g = [log_loss(*v, g) <= log_loss(*v, loc) for loc, v in zip(local_models, val)]
+            per_site["site_gate"] = [g if u else loc for u, loc in zip(use_g, local_models)]
+            gate_share.append(float(np.mean(use_g)))
+        for m in active:
+            models = per_site.get(m) or [state[m]] * len(clients)
             trajectories[m].append({"round": r, **_evaluate(models, data)})
 
     return {"seed": seed, "config": cfg.__dict__.copy(), "trajectories": trajectories,
             "selective_accepted": accepted, "gate_federated_share": gate_share,
             "drifted_sites": [c.name for c in clients if c.drifted],
-            "scalars": {m: summarise_trajectory(trajectories[m], cfg) for m in METHODS}}
+            "scalars": {m: summarise_trajectory(trajectories[m], cfg) for m in active}}
 
 
 def summarise_trajectory(traj: List[Dict[str, float]], cfg: DriftConfig) -> Dict[str, float]:
     """Scalar summaries of one method's trajectory.
 
-    * ``pre_drift_accuracy``: mean accuracy in the round just before the drift.
     * ``drop``: fall in mean accuracy at the first post-drift round.
     * ``final_*``: mean over the last five rounds (less noisy than the last round).
     * ``post_auc``: mean accuracy over all post-drift rounds.
@@ -203,11 +306,12 @@ def summarise_trajectory(traj: List[Dict[str, float]], cfg: DriftConfig) -> Dict
             "recovery_rounds": recovery}
 
 
-def run_seeds(cfg: DriftConfig, seeds: List[int],
+def run_seeds(cfg: DriftConfig, seeds: List[int], methods: Iterable[str] = ALL_METHODS,
               progress: Callable[[int], None] | None = None) -> List[Dict[str, object]]:
+    methods = list(methods)
     runs = []
     for s in seeds:
-        runs.append(run_drift_experiment(cfg, s))
+        runs.append(run_drift_experiment(cfg, s, methods))
         if progress:
             progress(s)
     return runs

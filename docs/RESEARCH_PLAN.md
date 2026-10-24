@@ -50,11 +50,11 @@ Run at least 10–30 seeds. Report mean, standard deviation, and per-seed outcom
 
 Specify a drift round, alter a subset of clients' data-generating process after that round, and evaluate performance before and after the change. Measure detection delay and recovery time.
 
-### M3 — Strengthen comparisons 🟡 (fine-tuned FedAvg and coordinate median added; FedProx/Ditto outstanding)
+### M3 — Strengthen comparisons 🟡 (FedAvg+fine-tune, Ditto, FedProx, median, trimmed mean added at fixed defaults; matched tuning budgets outstanding)
 
 Add a personalised federated-learning method and a robust aggregation method. Document implementation choices and tuning budgets fairly across methods.
 
-### M4 — Ablation and failure analysis 🟡 (heterogeneity, data size, severity done; tolerance, client count, validation size outstanding)
+### M4 — Ablation and failure analysis ✅ (heterogeneity, data size, severity, tolerance, client count, validation size, drift schedule)
 
 Vary client count, heterogeneity severity, drift magnitude, selection tolerance, and validation sample size. Record when selection rejects helpful updates or accepts harmful ones.
 
@@ -62,7 +62,7 @@ Vary client count, heterogeneity severity, drift magnitude, selection tolerance,
 
 Add calibration/uncertainty measures and explicitly designed privacy threat models. Do not describe the system as privacy-preserving until the protocol and evidence support that claim.
 
-### M6 — Public benchmark
+### M6 — Public benchmark 🟡 (scikit-learn digits and breast cancer with synthetic partitions done; a realistic multi-site benchmark outstanding)
 
 Choose a suitable public dataset and document preprocessing, partitioning, licences, and limitations. Keep synthetic and real-data results distinct.
 

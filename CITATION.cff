@@ -4,7 +4,7 @@ title: "When Not to Learn: Selective Collaboration in Federated Learning"
 authors:
   - family-names: Annareddy
     given-names: Abhinav
-version: 0.3.0
+version: 0.4.0
 type: software
 license: MIT
 repository-code: "https://github.com/abhinavannareddy/when_not_to_learn"

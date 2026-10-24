@@ -47,3 +47,37 @@ def test_paired_comparison_detects_consistent_gain_and_null():
     noise = np.random.default_rng(2).normal(0, 0.02, size=25)
     null = paired_comparison(base + noise, base)
     assert null["ci_low"] < 0 < null["ci_high"]
+
+
+def test_all_methods_run_and_are_finite():
+    from when_not_to_learn.drift import ALL_METHODS
+    run = run_drift_experiment(SMALL, seed=4, methods=ALL_METHODS)
+    assert set(run["scalars"]) == set(ALL_METHODS)
+    for m in ALL_METHODS:
+        assert np.isfinite(run["scalars"][m]["final_log_loss"])
+
+
+def test_method_subset_pulls_in_dependencies():
+    run = run_drift_experiment(SMALL, seed=4, methods=["site_gate"])
+    assert {"site_gate", "selective", "local_only"} == set(run["scalars"])
+
+
+def test_drift_schedules():
+    from when_not_to_learn.drift import new_regime_weight
+    ab = DriftConfig(drift_kind="abrupt", drift_round=5)
+    assert [new_regime_weight(ab, r) for r in (5, 6)] == [0.0, 1.0]
+    gr = DriftConfig(drift_kind="gradual", drift_round=5, ramp_rounds=10)
+    assert new_regime_weight(gr, 5) == 0.0 and new_regime_weight(gr, 10) == 0.5 and new_regime_weight(gr, 20) == 1.0
+    rc = DriftConfig(drift_kind="recurring", drift_round=5, period=3)
+    assert [new_regime_weight(rc, r) for r in range(5, 15)] == [0, 1, 1, 1, 0, 0, 0, 1, 1, 1]
+
+
+def test_validation_subsampling_runs():
+    cfg = DriftConfig(**{**SMALL.__dict__, "val_size": 5})
+    assert run_drift_experiment(cfg, seed=1, methods=["selective"])["selective_accepted"]
+
+
+def test_trimmed_mean_ignores_outlier():
+    from when_not_to_learn.drift import _trimmed_mean
+    ups = [np.zeros(3)] * 4 + [np.full(3, 100.0)]
+    assert np.allclose(_trimmed_mean(ups, 0.2), 0.0)

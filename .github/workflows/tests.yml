@@ -24,3 +24,5 @@ jobs:
         run: python -m pytest
       - name: Smoke-test the benchmark CLI
         run: python -m when_not_to_learn.benchmark --seeds 2 --sweep-seeds 1 --no-sweeps --out /tmp/bench
+      - name: Smoke-test the real-data CLI
+        run: python -m when_not_to_learn.realdata --seeds 1 --out /tmp/real
